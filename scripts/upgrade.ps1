@@ -61,20 +61,31 @@ try {
 $dirty = & git -C $fork status --porcelain
 if ($dirty) { throw 'fork 工作区不干净，先提交或 stash 后再升级。' }
 
-# 2) fetch upstream
-Write-Host 'fetch upstream ...'
+# 2) fetch origin + upstream
+Write-Host 'fetch origin + upstream ...'
+Invoke-Git $fork @('fetch','--prune','--quiet','origin')
 Invoke-Git $fork @('fetch','--prune','--quiet','upstream')
 
-# 3) 漂移检测
-$base      = (Invoke-Git $fork @('merge-base',$UpstreamRef,$Branch)).Trim()
-$forkAhead = [int](Invoke-Git $fork @('rev-list','--count',"$UpstreamRef..$Branch"))
-$upAhead   = [int](Invoke-Git $fork @('rev-list','--count',"$Branch..$UpstreamRef"))
+# 3) 漂移检测（相对上游 + origin）
+$base         = (Invoke-Git $fork @('merge-base',$UpstreamRef,$Branch)).Trim()
+$forkAhead    = [int](Invoke-Git $fork @('rev-list','--count',"$UpstreamRef..$Branch"))
+$upAhead      = [int](Invoke-Git $fork @('rev-list','--count',"$Branch..$UpstreamRef"))
+$originAhead  = [int](Invoke-Git $fork @('rev-list','--count',"origin/$Branch..$Branch"))
+$originBehind = [int](Invoke-Git $fork @('rev-list','--count',"$Branch..origin/$Branch"))
 Write-Host ("  分叉基        = {0}" -f $base.Substring(0,7))
 Write-Host ("  fork 领先上游 = {0} 提交" -f $forkAhead)
 Write-Host ("  上游领先 fork = {0} 提交（需合入）" -f $upAhead)
+Write-Host ("  origin 同步   = 领先 {0} / 落后 {1}" -f $originAhead, $originBehind)
 
 if ($upAhead -eq 0) { Write-Host '已是最新，无需升级。'; exit 0 }
 if (-not $Apply)  { Write-Host "DryRun 结束：上游领先 $upAhead 个提交，加 -Apply 执行升级。"; exit 0 }
+
+# 3.5) Apply 前：快进同步 origin/branch，吸收已发布的 fork 补丁（如 822e634），避免 push 非快进
+if ($originAhead -gt 0) { throw "本地 $Branch 领先 origin/$Branch $originAhead 个提交（未推送本地提交），先手动处理" }
+if ($originBehind -gt 0) {
+  Write-Host ("本地 {0} 落后 origin/{0} {1} 个提交，快进同步" -f $Branch, $originBehind)
+  Invoke-Git $fork @('merge','--ff-only',"origin/$Branch")
+}
 
 # 4) 候选分支 + merge upstream
 $ts   = Get-Date -Format 'yyyyMMdd-HHmmss'
