@@ -37,7 +37,10 @@ $fork      = if ($ForkPath) { (Resolve-Path $ForkPath).Path } else { Join-Path $
 function Invoke-Git([string]$repo, [string[]]$a) {
   $out  = & git --no-optional-locks -C $repo @a 2>&1
   $code = $LASTEXITCODE
-  if ($code -ne 0) { throw "git -C $repo $($a -join ' ') 退出码 $code" }
+  if ($code -ne 0) {
+    $detail = ($out | Out-String).Trim()
+    throw ("git -C {0} {1} 退出码 {2}: {3}" -f $repo, ($a -join ' '), $code, $detail)
+  }
   return $out
 }
 
