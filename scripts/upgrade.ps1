@@ -80,6 +80,9 @@ Write-Host ("  origin 同步   = 领先 {0} / 落后 {1}" -f $originAhead, $orig
 if ($upAhead -eq 0) { Write-Host '已是最新，无需升级。'; exit 0 }
 if (-not $Apply)  { Write-Host "DryRun 结束：上游领先 $upAhead 个提交，加 -Apply 执行升级。"; exit 0 }
 
+# 3.4) 切回目标分支（fork 可能处于 detached HEAD，如 submodule 检出到 gitlink）
+Invoke-Git $fork @('checkout',$Branch)
+
 # 3.5) Apply 前：快进同步 origin/branch，吸收已发布的 fork 补丁（如 822e634），避免 push 非快进
 if ($originAhead -gt 0) { throw "本地 $Branch 领先 origin/$Branch $originAhead 个提交（未推送本地提交），先手动处理" }
 if ($originBehind -gt 0) {
