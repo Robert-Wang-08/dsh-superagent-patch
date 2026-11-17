@@ -1,0 +1,502 @@
+From 8daf4b2aaefd2c1f71f2594c8cb9711a226bf823 Mon Sep 17 00:00:00 2001
+From: Robert-Wang-08 <wang.robert.08@gmail.com>
+Date: Sat, 14 Nov 2026 18:12:26 +0800
+Subject: [PATCH 3/5] fix(windows): read an absolute prompt path, and run the
+ suite on Windows
+
+`promptFile` appended `.md` to a path that Windows had already made
+absolute, because the file lived on another drive and `relative()` cannot
+cross them; it read `prompts\C:\...` instead. An absolute name is now read
+as given, and the packaged-file reader is shared by both paths.
+
+The suite ran only on POSIX. Its platform-independent parts now pass on
+Windows, and the parts that cannot run there are skipped with the reason:
+
+- Docs tables are compared with `/` separators and either line ending,
+  since a Windows checkout holds `src\...` paths and CRLF.
+- A git origin path that carries backslashes comes back quoted and
+  escaped; the test compares the path, not git's quoting, and the worker
+  gitconfig assertion uses the same `gitQuote` the writer uses.
+- PATH cases use the platform's delimiter and separator.
+- The worker-shim directory grows a `.cmd` companion on Windows, so the
+  expected listings include it.
+- `sh`, `sleep`, `#!/bin/sh` fakes, singleton signals, POSIX mode bits and
+  tmux have no Windows equivalent: the service script, the fake bot CLI,
+  the POSIX shims, the setup CLI stand-ins and the database mode bits are
+  skipped there. Windows runs that profile through
+  `dsh-superagent-service.ps1` and the `.cmd` shims.
+- A file symlink needs a privilege the test runner does not hold; the
+  directory links the tests need are junctions, which need none.
+---
+ src/app/skill-files.ts       | 22 +++++++++++++---------
+ src/infra/environment.ts     |  3 ++-
+ tests/commands.spec.ts       | 11 +++++++++--
+ tests/deployment.spec.ts     |  7 +++++--
+ tests/docs.spec.ts           | 13 ++++++++-----
+ tests/environment.spec.ts    | 30 ++++++++++++++++++++----------
+ tests/runtime.spec.ts        | 10 +++++-----
+ tests/service-script.spec.ts | 33 ++++++++++++++++++---------------
+ tests/sources.spec.ts        |  3 ++-
+ tests/store.spec.ts          |  3 ++-
+ 10 files changed, 84 insertions(+), 51 deletions(-)
+
+diff --git a/src/app/skill-files.ts b/src/app/skill-files.ts
+index ead95b8..7c14b7c 100644
+--- a/src/app/skill-files.ts
++++ b/src/app/skill-files.ts
+@@ -1,23 +1,24 @@
+ /** Loads packaged built-in skill definitions and prompt templates from disk. */
+ import { readFileSync } from 'node:fs'
++import { isAbsolute } from 'node:path'
+ import { packagePath } from '../infra/paths.ts'
+ /**
+  * Reads a packaged text file with normalized Unix line endings.
+  * @throws Naming the file when it is missing or whitespace-only, because `dsh-superagent` cannot load without it.
+  */
+-function packaged(...parts: string[]): { path: string; text: string } {
+-  const path = packagePath(...parts)
+-  let text: string
+-  try { text = readFileSync(path, 'utf8').replaceAll('\r\n', '\n') }
++function text(path: string): { path: string; text: string } {
++  let content: string
++  try { content = readFileSync(path, 'utf8').replaceAll('\r\n', '\n') }
+   catch (error) {
+     throw (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Error(`Missing packaged file: ${path}`, { cause: error }) : error
+   }
+-  if (!text.trim()) throw new Error(`Empty packaged file: ${path}`)
+-  return { path, text }
++  if (!content.trim()) throw new Error(`Empty packaged file: ${path}`)
++  return { path, text: content }
+ }
++const packaged = (...parts: string[]): { path: string; text: string } => text(packagePath(...parts))
+ function load(name: string) {
+-  const { path, text } = packaged('skills', `dsh-superagent-${name}`, 'SKILL.md')
+-  const match = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n\n([\s\S]*)$/.exec(text)
++  const { path, text: content } = packaged('skills', `dsh-superagent-${name}`, 'SKILL.md')
++  const match = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n\n([\s\S]*)$/.exec(content)
+   if (!match) throw new Error(`Invalid packaged skill: ${path}`)
+   return { name: match[1]!, description: match[2]!, content: match[3]!, path }
+ }
+@@ -25,8 +26,11 @@ export const bundledSkills = { feishu: load('feishu'), github: load('github') }
+ /**
+  * Loads a built-in prompt file (`prompts/<name>.md`). Source `.md` files are written one sentence per line for
+  * readable diffs; `promptFile` joins lines within each paragraph with spaces while keeping blank-line paragraph breaks.
++ * An absolute `name` is read as given: Windows cannot express a file on another drive relative to `prompts/`.
+  */
+ export function promptFile(name: string): string {
+-  const paragraphs = packaged('prompts', `${name}.md`).text.trim().split(/\n(?:[ \t]*\n)+/)
++  const file = `${name}.md`
++  const { text: content } = text(isAbsolute(file) ? file : packagePath('prompts', file))
++  const paragraphs = content.trim().split(/\n(?:[ \t]*\n)+/)
+   return paragraphs.map(paragraph => paragraph.split('\n').map(line => line.trim()).join(' ')).join('\n')
+ }
+diff --git a/src/infra/environment.ts b/src/infra/environment.ts
+index 4ec55bc..224e3b7 100644
+--- a/src/infra/environment.ts
++++ b/src/infra/environment.ts
+@@ -19,7 +19,8 @@ export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
+ export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
+ export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
+ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+-const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
++/** Quotes a git configuration value, doubling the backslash and double quote characters git reads as escapes. */
++export const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
+ export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
+ 
+ export function sameDirectory(a: string, b: string): boolean {
+diff --git a/tests/commands.spec.ts b/tests/commands.spec.ts
+index 004e65e..0318381 100644
+--- a/tests/commands.spec.ts
++++ b/tests/commands.spec.ts
+@@ -172,8 +172,15 @@ it('says how to add the bot to a chat when Feishu answers that it is not a membe
+ it('names only the program and how it ended when a command prints no diagnostics, never its arguments', async () => {
+   const commands = new Commands(() => deployment, {}, new AbortController().signal)
+   const secret = 'secret reply text'
+-  await expect(commands.run('sh', ['-c', 'exit 3', secret])).rejects.toMatchObject({ message: 'sh exited with code 3', exitCode: 3 })
+-  await expect(commands.run('sh', ['-c', 'kill -9 $$', secret])).rejects.toMatchObject({ message: 'sh was stopped by SIGKILL' })
++  // `sh` is the POSIX shell; elsewhere node exits the same way from a program the host resolves.
++  const failing = process.platform === 'win32'
++    ? { program: process.execPath, argv: ['-e', 'process.exit(3)', secret], named: 'node.exe' }
++    : { program: 'sh', argv: ['-c', 'exit 3', secret], named: 'sh' }
++  await expect(commands.run(failing.program, failing.argv)).rejects.toMatchObject({ message: `${failing.named} exited with code 3`, exitCode: 3 })
++  // Signals are POSIX: Windows terminates a child with an exit status instead.
++  if (process.platform !== 'win32') {
++    await expect(commands.run('sh', ['-c', 'kill -9 $$', secret])).rejects.toMatchObject({ message: 'sh was stopped by SIGKILL' })
++  }
+   await expect(commands.run('/no/such/program', ['secret reply text'])).rejects.toMatchObject({ message: 'program could not run: ENOENT' })
+   // Timeouts kill the child with SIGTERM; Node's default error message would echo every argument.
+   const timedOut = { killed: true, signal: 'SIGTERM', code: null, stderr: '',
+diff --git a/tests/deployment.spec.ts b/tests/deployment.spec.ts
+index 532b40b..1b2b759 100644
+--- a/tests/deployment.spec.ts
++++ b/tests/deployment.spec.ts
+@@ -30,7 +30,8 @@ beforeEach(async () => {
+   program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', brand: 'lark', identities: { bot: { status: 'ready' } } }))
+   // Stale worker shims with the same binary name must be skipped regardless of PATH normalization or symlinks.
+   program(join(dir, 'state', 'worker-bin', 'gh'))
+-  symlinkSync(join(dir, 'state'), join(dir, 'state-link'))
++  // A junction is what Windows creates without a privilege, and `realpath` resolves it like any other link.
++  symlinkSync(join(dir, 'state'), join(dir, 'state-link'), 'junction')
+   await exec('git', ['init', '-q', join(dir, 'widgets')], { env: gitEnv() })
+   await exec('git', ['-C', join(dir, 'widgets'), 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { env: gitEnv() })
+ })
+@@ -56,7 +57,9 @@ describe('configuration schema', () => {
+   })
+ })
+ 
+-describe('setup', () => {
++// Setup resolves the account by running the CLIs: the stand-ins here are `#!/bin/sh` programs, which Windows cannot run.
++// The Windows CLI resolution is covered by the worker shims and .cmd companions the environment tests write.
++describe.skipIf(process.platform === 'win32')('setup', () => {
+   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
+     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
+     expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
+diff --git a/tests/docs.spec.ts b/tests/docs.spec.ts
+index f41b456..b57c1c9 100644
+--- a/tests/docs.spec.ts
++++ b/tests/docs.spec.ts
+@@ -1,10 +1,12 @@
+ import { existsSync, readdirSync, readFileSync } from 'node:fs'
+-import { dirname, join, relative, resolve } from 'node:path'
++import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import { describe, expect, it } from 'vitest'
+ 
+ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+ const NUMBERED = /^(\d{3})-[a-z0-9-]+\.md$/
++/** Repo-relative paths as documents write them, whichever separator the platform's `relative` returns. */
++const slashed = (path: string): string => path.split(sep).join('/')
+ const numbered = readdirSync(join(ROOT, 'docs')).filter(name => NUMBERED.test(name)).sort()
+ const entries = ['README.md', 'SETUP.md']
+ const documents = [...entries, ...readdirSync(join(ROOT, 'docs')).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]
+@@ -13,13 +15,14 @@ function links(file: string): string[] {
+   return [...readFileSync(file, 'utf8').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!.split('#')[0]!).filter(target => target && !/^[a-z]+:/.test(target))
+ }
+ const files = (directory: string): string[] => readdirSync(join(ROOT, directory), { recursive: true, withFileTypes: true })
+-  .filter(entry => entry.isFile()).map(entry => relative(ROOT, join(entry.parentPath, entry.name)))
++  .filter(entry => entry.isFile()).map(entry => slashed(relative(ROOT, join(entry.parentPath, entry.name))))
+ /**
+  * Extract repo-relative file paths from the first column of a table under `## <heading>` in `docs/007-architecture.md`.
+  * Bare filenames inherit the directory of the preceding path in the same cell.
+  */
+ function listed(heading: string): string[] {
+-  const lines = read('docs/007-architecture.md').split('\n')
++  // A Windows checkout may hold either line ending; the table's rows are what the test reads.
++  const lines = read('docs/007-architecture.md').split(/\r?\n/)
+   const start = lines.indexOf(`## ${heading}`)
+   const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
+   // The first two rows are the header and its separator.
+@@ -27,7 +30,7 @@ function listed(heading: string): string[] {
+   return rows.flatMap(row => {
+     let directory = ''
+     return [...row.split('|')[1]!.matchAll(/`([^`]+)`/g)].map(([, name]) => {
+-      if (!name!.includes('/')) return join(directory, name!)
++      if (!name!.includes('/')) return slashed(join(directory, name!))
+       directory = dirname(name!)
+       return name!
+     })
+@@ -42,7 +45,7 @@ describe('documentation', () => {
+     const violations = numbered.flatMap(name => links(join(ROOT, 'docs', name)).flatMap(target => {
+       const linked = resolve(ROOT, 'docs', target)
+       if (!linked.endsWith('.md')) return []
+-      const number = NUMBERED.exec(linked.slice(linked.lastIndexOf('/') + 1))?.[1]
++      const number = NUMBERED.exec(basename(linked))?.[1]
+       return dirname(linked) === join(ROOT, 'docs') && number !== undefined && number < name.slice(0, 3) ? [] : [`${name} → ${target}`]
+     }))
+     expect(violations).toEqual([])
+diff --git a/tests/environment.spec.ts b/tests/environment.spec.ts
+index f22722c..12c1680 100644
+--- a/tests/environment.spec.ts
++++ b/tests/environment.spec.ts
+@@ -1,7 +1,7 @@
+ import { execFile, spawn } from 'node:child_process'
+ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+-import { join } from 'node:path'
++import { delimiter, join, sep } from 'node:path'
+ import { promisify } from 'node:util'
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+@@ -22,11 +22,13 @@ const workerEnv = (env: Record<string, string | undefined>): Record<string, stri
+ /** The files a shim directory holds: a POSIX shim per command, plus each `.cmd` companion on Windows. */
+ const shims = (...names: string[]): string[] =>
+   names.flatMap(name => process.platform === 'win32' ? [name, `${name}.cmd`] : [name]).sort()
++// The shims these tests run are `#!/bin/sh` scripts; Windows runs the `.cmd` companions the Windows test covers instead.
++const posixIt = process.platform === 'win32' ? it.skip : it
+ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'environment-')); mkdirSync(join(dir, 'real')) })
+ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+ 
+ describe('worker shims', () => {
+-  it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
++  posixIt('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
+     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
+     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
+     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
+@@ -35,13 +37,13 @@ describe('worker shims', () => {
+     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
+     expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: `${dir}/agent-config`, path: [join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':') })
+   })
+-  it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
++  posixIt('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
+     await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
+     const bin = workerBin(dir)
+     await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
+     await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
+   })
+-  it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
++  posixIt('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
+     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
+     const base = testDeployment()
+     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
+@@ -57,9 +59,12 @@ describe('worker shims', () => {
+     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
+     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
+     rmSync(join(workerBin(dir), 'notes'))
+-    symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
+-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
+-    rmSync(join(workerBin(dir), 'link'))
++    // Windows creates a file symlink only with a privilege the test runner does not hold; the foreign-file cases below still cover it.
++    if (process.platform !== 'win32') {
++      symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
++      await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
++      rmSync(join(workerBin(dir), 'link'))
++    }
+     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
+     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagent`)
+     expect(readFileSync(workerGitConfig(dir), 'utf8')).toBe('[user]\n\tname = someone\n')
+@@ -113,7 +118,10 @@ describe('agent git configuration', () => {
+     await git('init', '-q', 'repo')
+     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })
+     expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://github.com/acme/widgets.git')
+-    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
++    // Git quotes an origin whose path holds backslashes and doubles them; compare the path it names, not its quoting.
++    const origin = (await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper'))
++      .replace(/^file:"(.*?)"/, (_, path: string) => `file:${path.replaceAll('\\\\', '\\')}`)
++    expect(origin).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+     expect(await git('config', '--get-all', 'credential.helper')).toBe('')
+     await expect(git('config', 'commit.gpgsign')).rejects.toThrow()
+     await expect(git('config', 'core.abbrev')).rejects.toThrow()
+@@ -142,9 +150,11 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
+ 
+ it('removes every spelling of a directory from PATH and keeps the other entries', () => {
+   mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
+-  symlinkSync(join(dir, 'state'), join(dir, 'link'))
++  // A junction is what Windows creates without a privilege, and `realpath` resolves it like any other link.
++  symlinkSync(join(dir, 'state'), join(dir, 'link'), 'junction')
+   const bin = join(dir, 'state', 'worker-bin')
+-  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(':'), bin)).toBe('/usr/bin:node_modules/.bin')
++  const entries = [`${bin}${sep}`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin']
++  expect(withoutDirectory(entries.join(delimiter), bin)).toBe(['/usr/bin', 'node_modules/.bin'].join(delimiter))
+ })
+ 
+ /** Minimal SubprocessRuntime backed by child_process.spawn with an isolated global git config. */
+diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
+index 2403141..3802c99 100644
+--- a/tests/runtime.spec.ts
++++ b/tests/runtime.spec.ts
+@@ -3,7 +3,7 @@ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
+ import { mkdtempSync, rmSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { DatabaseSync } from 'node:sqlite'
+-import { join } from 'node:path'
++import { delimiter, join } from 'node:path'
+ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
+ import type { UserMessage } from '@deepseek-ai/dsh-llm'
+ import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+@@ -28,7 +28,7 @@ import { feishuChannel } from '../src/sources/feishu-trigger.ts'
+ import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
+ import { IM_WORDS } from '../src/infra/text.ts'
+ import { observePull, pullOf } from '../src/sources/github-pull.ts'
+-import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
++import { credentialHelper, gitQuote, workerGitConfig } from '../src/infra/environment.ts'
+ import { policyHistory } from '../src/app/settings-history.ts'
+ import { overview } from '../src/app/views/overview.ts'
+ import { preview, readable } from '../src/app/views/text.ts'
+@@ -985,13 +985,13 @@ it('writes worker shims and the agent environment from the configuration only, a
+   expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
+   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
+   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
+-  expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
++  expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = ${gitQuote(credentialHelper(AGENT()))}`)
+   expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
+   expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
+-  expect(process.env.PATH?.split(':')[0]).toBe(bin)
++  expect(process.env.PATH?.split(delimiter)[0]).toBe(bin)
+   await next.stop()
+   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+-  expect(process.env.PATH?.split(':')).not.toContain(bin)
++  expect(process.env.PATH?.split(delimiter)).not.toContain(bin)
+ })
+ 
+ it('waits for setup when the shim directory holds a file dsh-superagent did not write, and leaves the file alone', async () => {
+diff --git a/tests/service-script.spec.ts b/tests/service-script.spec.ts
+index 8a899af..02612a7 100644
+--- a/tests/service-script.spec.ts
++++ b/tests/service-script.spec.ts
+@@ -11,6 +11,9 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
+ let root: string
+ let server: Server | undefined
+ let sleepers: ChildProcess[] = []
++// The script is a POSIX shell's: it drives `ps`, `tmux` and the profile's `dsh` through fake `#!/bin/sh` programs, and
++// Windows runs the profile through `dsh-superagent-service.ps1` instead.
++const posixIt = process.platform === 'win32' ? it.skip : it
+ const control = (profile: string) => join(root, '.artifacts', 'control', 'profiles', profile)
+ const program = (name: string, body: string) => writeFileSync(join(root, 'bin', name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+ /** Spawn a dummy process whose PID can be listed by the fake ps binary; ignoreInterrupt simulates a hung graceful stop. */
+@@ -66,25 +69,25 @@ async function answering(state: unknown = READY, always = false): Promise<string
+ const status = async (profile: string, url = 'http://127.0.0.1:9') =>
+   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as { pids: number[]; manually_stopped: boolean }
+ 
+-it('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
++posixIt('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
+   processes(service(sleeper()), `${sleeper()} node node /opt/dsh --profile=superagent`)
+   expect(await run('stop')).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes found') })
+   expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(false)
+ })
+-it('keeps a stop per profile', async () => {
++posixIt('keeps a stop per profile', async () => {
+   expect(await run('stop', '--profile', 'one')).toMatchObject({ code: 0, stdout: expect.stringContaining('Automatic recovery is paused') })
+   expect(await status('one')).toMatchObject({ manually_stopped: true })
+   expect(await status('two')).toMatchObject({ manually_stopped: false })
+   const skipped = await run('--respect-stop', 'start', '--profile', 'one')
+   expect(skipped).toMatchObject({ code: 0, stdout: expect.stringContaining('Intentional stop is active') })
+ })
+-it('takes no `dsh plugin` command of the profile for its service', async () => {
++posixIt('takes no `dsh plugin` command of the profile for its service', async () => {
+   const service = sleeper()
+   processes(`${sleeper()} node node /opt/my tools/dsh plugin --profile superagent add link:/x`,
+     `${service} node node /opt/my tools/dsh --profile superagent --no-open`)
+   expect(await status('superagent')).toMatchObject({ pids: [service] })
+ })
+-it('records the service PID at start, and still refuses a second instance the scan finds', async () => {
++posixIt('records the service PID at start, and still refuses a second instance the scan finds', async () => {
+   const url = await answering()
+   const pid = sleeper()
+   writeFileSync(join(root, 'pane'), `${pid}\n`)
+@@ -104,13 +107,13 @@ it('records the service PID at start, and still refuses a second instance the sc
+   expect(again).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes') })
+   expect(await status('superagent')).toMatchObject({ pids: [pid, second] })
+ }, 20_000)
+-it('waits only for the process it stopped', async () => {
++posixIt('waits only for the process it stopped', async () => {
+   const pid = sleeper()
+   // Another instance shows up once the stopped one ended.
+   processes(service(pid), `after:${pid} ${sleeper()} node node /opt/dsh --profile superagent`)
+   expect(await run('stop', '--stop-timeout', '5')).toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
+ }, 20_000)
+-it('keeps only the newest logs it wrote for the profile', async () => {
++posixIt('keeps only the newest logs it wrote for the profile', async () => {
+   const url = await answering()
+   const pid = sleeper()
+   writeFileSync(join(root, 'pane'), `${pid}\n`)
+@@ -132,7 +135,7 @@ it('keeps only the newest logs it wrote for the profile', async () => {
+   expect(logs.filter(name => name.startsWith('dsh-superagent-other-'))).toHaveLength(25)
+   expect(logs).toContain('dsh-superagent-20260901-000000-1.log')
+ }, 20_000)
+-it('reports a service whose Feishu bot setup could not check as running, and reads an answer with keys missing', async () => {
++posixIt('reports a service whose Feishu bot setup could not check as running, and reads an answer with keys missing', async () => {
+   processes(service(sleeper()))
+   const feishu = { health: { runtime: { state: 'ready', detail: '' }, feishu: { state: 'paused', detail: '' } },
+     setup: { problem: null, feishuProblem: { code: 'feishuNoBot', detail: 'No bot' } } }
+@@ -142,7 +145,7 @@ it('reports a service whose Feishu bot setup could not check as running, and rea
+   server!.close()
+   expect(await run('status', '--url', await answering({ health: { runtime: { state: 'error' } } }, true))).toMatchObject({ code: 1 })
+ })
+-it('exits 2 while a part such as a Source reports an error, which a restart does not fix, and prints what it reports', async () => {
++posixIt('exits 2 while a part such as a Source reports an error, which a restart does not fix, and prints what it reports', async () => {
+   processes(service(sleeper()))
+   const github = { health: { runtime: { state: 'ready', detail: '' }, github: { state: 'error', detail: 'bad token' } }, setup: {} }
+   const url = await answering(github, true)
+@@ -152,7 +155,7 @@ it('exits 2 while a part such as a Source reports an error, which a restart does
+   expect(await run('start', '--url', url, '--timeout', '10'))
+     .toMatchObject({ code: 2, stdout: expect.stringContaining('github reports an error, which a restart does not fix: bad token') })
+ }, 20_000)
+-it('exits 3 while the service waits for setup, from status and from start, which a restart does not fix', async () => {
++posixIt('exits 3 while the service waits for setup, from status and from start, which a restart does not fix', async () => {
+   processes(service(sleeper()))
+   const waiting = { health: { runtime: { state: 'paused', detail: '' } },
+     setup: { problem: { code: 'repositoryUnset', detail: 'The GitHub Source names no repository.' }, feishuProblem: null } }
+@@ -161,7 +164,7 @@ it('exits 3 while the service waits for setup, from status and from start, which
+   expect(await run('start', '--url', url, '--timeout', '10'))
+     .toMatchObject({ code: 3, stdout: expect.stringContaining('waiting for setup: The GitHub Source names no repository.') })
+ }, 20_000)
+-it('restarts the service, and a restart whose graceful stop timed out does not keep recovery off', async () => {
++posixIt('restarts the service, and a restart whose graceful stop timed out does not keep recovery off', async () => {
+   const url = await answering()
+   const old = sleeper(), pid = sleeper()
+   processes(service(old))
+@@ -179,7 +182,7 @@ it('restarts the service, and a restart whose graceful stop timed out does not k
+     .toMatchObject({ code: 1, stderr: expect.stringContaining('Graceful stop timed out') })
+   expect(await status('superagent')).toMatchObject({ manually_stopped: false })
+ }, 20_000)
+-it('refuses a second control operation while one holds the profile\'s lock', async () => {
++posixIt('refuses a second control operation while one holds the profile\'s lock', async () => {
+   mkdirSync(control('superagent'), { recursive: true })
+   const held = join(root, 'held')
+   const holder = spawn('python3', ['-c', `import fcntl, pathlib, time
+@@ -192,14 +195,14 @@ time.sleep(30)`], { stdio: 'ignore' })
+   expect(await run('status')).toMatchObject({ code: 1,
+     stderr: expect.stringContaining('Another dsh-superagent control operation is in progress') })
+ }, 20_000)
+-it('refuses to start a service while no process runs it but something answers at its URL', async () => {
++posixIt('refuses to start a service while no process runs it but something answers at its URL', async () => {
+   const url = await answering(READY, true)
+   expect(await run('start', '--url', url, '--timeout', '5'))
+     .toMatchObject({ code: 1, stderr: expect.stringContaining('An existing orchestrator answers at this URL') })
+   expect(readFileSync(join(root, 'tmux.log'),
+     'utf8').split('---\n').filter(Boolean).map(call => call.split('\n')[0])).toEqual(['has-session'])
+ }, 20_000)
+-it('starts the service in a new window of the profile\'s tmux session when the session exists', async () => {
++posixIt('starts the service in a new window of the profile\'s tmux session when the session exists', async () => {
+   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
+     + `case "$1" in has-session) exit 0;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
+   const url = await answering()
+@@ -211,7 +214,7 @@ it('starts the service in a new window of the profile\'s tmux session when the s
+   expect(calls.find(call => call[0] === 'new-window')).toEqual(expect.arrayContaining(['-t', '=dsh-superagent:']))
+   expect(calls.some(call => call[0] === 'new-session')).toBe(false)
+ }, 20_000)
+-it('exits 1 when the started service does not answer in time, and leaves its process running', async () => {
++posixIt('exits 1 when the started service does not answer in time, and leaves its process running', async () => {
+   const pid = sleeper()
+   writeFileSync(join(root, 'pane'), `${pid}\n`)
+   started(service(pid))
+@@ -219,7 +222,7 @@ it('exits 1 when the started service does not answer in time, and leaves its pro
+     .toMatchObject({ code: 1, stderr: expect.stringContaining('Startup health check timed out') })
+   expect(() => process.kill(pid, 0)).not.toThrow()
+ }, 20_000)
+-it('does not signal a process that took the recorded service PID, and keeps a stop that timed out', async () => {
++posixIt('does not signal a process that took the recorded service PID, and keeps a stop that timed out', async () => {
+   mkdirSync(control('superagent'), { recursive: true })
+   const other = sleeper()
+   processes(`${other} sleep sleep 60`)
+diff --git a/tests/sources.spec.ts b/tests/sources.spec.ts
+index f4d0332..6d70267 100644
+--- a/tests/sources.spec.ts
++++ b/tests/sources.spec.ts
+@@ -1026,7 +1026,8 @@ it('reports GitHub as failing only after the configured number of consecutive fa
+   expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
+     observePulls: false, observeComments: false, observeCi: false })
+ })
+-describe('feishu event consumer', () => {
++// The fake bot CLI is a `#!/bin/sh` program driving `exec sleep` and `$$`, which Windows cannot run.
++describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
+   let dir: string
+   let controller: AbortController
+   let running: Promise<unknown> | undefined
+diff --git a/tests/store.spec.ts b/tests/store.spec.ts
+index 057e20b..bdbcb8b 100644
+--- a/tests/store.spec.ts
++++ b/tests/store.spec.ts
+@@ -246,7 +246,8 @@ it('lists in the same order in SQLite and in memory, and undoes a failed nested
+   store.close()
+ })
+ 
+-it('creates the state directory for its owner alone, and the database readable by its owner alone', () => {
++// Windows carries no POSIX mode bits: it restricts a directory through its ACL, which this suite does not model.
++it.skipIf(process.platform === 'win32')('creates the state directory for its owner alone, and the database readable by its owner alone', () => {
+   const path = join(directory, 'state', 'orchestrator.sqlite')
+   new Store(path).close()
+   expect([statSync(dirname(path)).mode & 0o777, statSync(path).mode & 0o777]).toEqual([0o700, 0o600])
+-- 
+2.40.0.windows.1
+

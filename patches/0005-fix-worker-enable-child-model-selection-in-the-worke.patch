@@ -1,0 +1,103 @@
+From 822e634873cfb12600632b325e7fbd01885ab172 Mon Sep 17 00:00:00 2001
+From: Robert-Wang-08 <70126004+Robert-Wang-08@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 09:31:53 +0800
+Subject: [PATCH 5/5] fix(worker): enable child model selection in the worker
+ preset
+
+The worker preset's `tool-subagent` row set `modelSelection: true` and
+`modelDiscovery: true`; neither key exists in the tool's config schema, so the
+row mounted with `modelSelectionSettings` at its default `false`. An Executor
+Session's `subagent` tool therefore had no `provider`, `model` or
+`reasoning_effort` fields, and passing them failed with "child model selection
+is disabled for this tool instance".
+
+Set `modelSelectionSettings: true` so a worker can route a delegated review to
+another provider/model within the routes the Host's
+`subagent-model-selection-settings` records for its Session, and drop the
+ignored keys. The regression test reads the bundle patch the way DSH does and
+fails on the previous config.
+---
+ cordis.patch.yml                  |  8 ++++++--
+ docs/006-deployment.md            |  2 +-
+ examples/profile.cordis.patch.yml |  9 +++++++++
+ tests/bundle-patch.spec.ts        | 10 ++++++++--
+ 4 files changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/cordis.patch.yml b/cordis.patch.yml
+index 5ada6df..1e678f3 100644
+--- a/cordis.patch.yml
++++ b/cordis.patch.yml
+@@ -101,13 +101,17 @@
+             config:
+               - id: tool-subagent-control
+                 name: '@deepseek-ai/dsh-tool-subagent-control'
++              # `modelSelectionSettings` is the only key that turns on child model selection; the tool
++              # then also exposes `provider`, `model` and `reasoning_effort`, restricted to the routes
++              # the Host's `subagent-model-selection-settings` records for the Session. A typo here
++              # (e.g. `modelSelection`) leaves the tool without those fields, so a worker cannot route
++              # an independent review to another provider/model.
+               - id: tool-subagent
+                 name: '@deepseek-ai/dsh-tool-subagent'
+                 config:
+                   provider: spawn
+                   toolName: subagent
+-                  modelSelection: true
+-                  modelDiscovery: true
++                  modelSelectionSettings: true
+                   agentPreset: standard
+           - id: tool-todo
+             name: '@deepseek-ai/dsh-tool-todo'
+diff --git a/docs/006-deployment.md b/docs/006-deployment.md
+index 7c1fadf..8aed988 100644
+--- a/docs/006-deployment.md
++++ b/docs/006-deployment.md
+@@ -88,7 +88,7 @@ Run the profile-creation command only for a new installation. If the profile alr
+ 
+ ## Machine configuration
+ 
+-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
++Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port. The example also installs the `subagent-model-selection-settings` row: an Executor Session's `subagent` tool mounts only when that Host policy row exists. Enable it and list the provider/model routes an Executor may select for a delegated child; while it is disabled, a worker's subagent inherits the worker's own model.
+ 
+ | Key | Required | Meaning |
+ | --- | --- | --- |
+diff --git a/examples/profile.cordis.patch.yml b/examples/profile.cordis.patch.yml
+index 74f0859..eadd803 100644
+--- a/examples/profile.cordis.patch.yml
++++ b/examples/profile.cordis.patch.yml
+@@ -10,3 +10,12 @@
+ # Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
+ # - id: dsh-superagent-feishu
+ #   disabled: false
++# An Executor Session's `subagent` tool needs this Host-scope policy row to mount; without it the worker
++# preset's subagent tool fails to mount. Set `enabled: true` and list the exact provider/model routes an
++# Executor may select for a delegated child (for example `{ provider: codex-relay, model: gpt-6.1-sol }`).
++- insert:
++    - id: subagent-model-selection-settings
++      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
++      config:
++        enabled: false
++        allowedModels: []
+diff --git a/tests/bundle-patch.spec.ts b/tests/bundle-patch.spec.ts
+index 33c027a..4caea33 100644
+--- a/tests/bundle-patch.spec.ts
++++ b/tests/bundle-patch.spec.ts
+@@ -39,8 +39,14 @@ it('defines the worker preset Executor Sessions run under, with a shell that mov
+   expect(named('@deepseek-ai/dsh-tool-jobs')).toEqual([{ waitTimeoutMs: 5000, maxWaitTimeoutMs: 5000 }])
+   expect(named('@deepseek-ai/dsh-tool-web')).toEqual([expect.objectContaining({ fetch: false })])
+   // Spawned subagents run under standard, whose shell moves a command to the background only after 60 s; forked ones, which would run under
+-  // this preset, are left out.
+-  expect(named('@deepseek-ai/dsh-tool-subagent')).toEqual([expect.objectContaining({ provider: 'spawn', agentPreset: 'standard' })])
++  // this preset, are left out. `modelSelectionSettings` is the installed tool's only switch for child model selection: without it the
++  // `subagent` call has no `provider`/`model`/`reasoning_effort` fields, so a worker cannot route an independent review elsewhere
++  // (`modelSelection`/`modelDiscovery` are not part of the tool's schema and are silently ignored).
++  expect(named('@deepseek-ai/dsh-tool-subagent')).toEqual([expect.objectContaining({
++    provider: 'spawn', agentPreset: 'standard', modelSelectionSettings: true })])
++  for (const ignored of ['modelSelection', 'modelDiscovery']) {
++    expect(named('@deepseek-ai/dsh-tool-subagent')[0]).not.toHaveProperty(ignored)
++  }
+   // What a worker needs, and none of what asks a person, presents, plans, changes the profile, schedules, sets goals or runs workflows.
+   for (const name of ['@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-fs-search', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-skill',
+     '@deepseek-ai/dsh-tool-todo', '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-subagent-control', '@deepseek-ai/dsh-compaction-basic',
+-- 
+2.40.0.windows.1
+

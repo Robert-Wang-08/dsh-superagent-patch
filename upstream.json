@@ -1,0 +1,16 @@
+{
+  "fork_url": "https://github.com/Robert-Wang-08/dsh-superagent-prototype.git",
+  "upstream_url": "https://github.com/deepseek-ai/dsh-superagent-prototype.git",
+  "branch": "main",
+  "upstream_pinned": "8c32a9dc5d72c033816c6a8110b37f40cf94fba4",
+  "fork_pinned": "5f294cd7abaf0a0f959788761a6a721b5abe8536",
+  "fork_origin_main": "931a4be5e6621414efc16733f2146d76a143c576",
+  "adaptation_commits": [
+    "c0b7df4261b289e9c9e1192fa1d307fd5a35906e",
+    "c10753c8f33dcd8a7bd2c3d7bde42a7bff42c3cb",
+    "8daf4b2aaefd2c1f71f2594c8cb9711a226bf823",
+    "5f294cd7abaf0a0f959788761a6a721b5abe8536",
+    "822e634873cfb12600632b325e7fbd01885ab172"
+  ],
+  "patch_how": "git format-patch upstream/main..origin/main --no-merges"
+}

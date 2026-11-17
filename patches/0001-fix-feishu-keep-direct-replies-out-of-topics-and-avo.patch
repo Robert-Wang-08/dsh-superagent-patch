@@ -1,0 +1,89 @@
+From c0b7df4261b289e9c9e1192fa1d307fd5a35906e Mon Sep 17 00:00:00 2001
+From: robert810217 <wang.robert.08@gmail.com>
+Date: Fri, 13 Nov 2026 16:19:22 +0800
+Subject: [PATCH 1/5] fix(feishu): keep direct replies out of topics and avoid
+ mention file expansion
+
+---
+ src/sources/feishu-channel.ts | 16 ++++++++++++++--
+ tests/registry.spec.ts        | 12 ++++++++++++
+ tests/runtime.spec.ts         |  3 ++-
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/src/sources/feishu-channel.ts b/src/sources/feishu-channel.ts
+index db2d33d..e41bcca 100644
+--- a/src/sources/feishu-channel.ts
++++ b/src/sources/feishu-channel.ts
+@@ -15,12 +15,24 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
+  */
+ const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
+   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
+-/** Replies in the topic of the target message; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
++/**
++ * Builds the `lark-cli` arguments for one reply.
++ * - A direct conversation has no topic stream, and Feishu answers `reply_in_thread` there with its generic internal
++ *   error (2200), so the flag is sent only to group chats (recorded as `direct: 'true'` on the address).
++ * - `lark-cli` reads a flag value that starts with `@` as a file reference, so a reply opening with a mention goes
++ *   through `--content` as a text message instead of `--markdown`.
++ */
++export function feishuReplyArgs(messageId: string, text: string, direct: boolean, idempotencyKey: string): string[] {
++  const body = text.startsWith('@') ? ['--content', JSON.stringify({ text })] : ['--markdown', text]
++  const topic = direct ? [] : ['--reply-in-thread']
++  return ['im', '+messages-reply', '--message-id', messageId, ...body, ...topic, '--idempotency-key', idempotencyKey]
++}
++/** Replies in the topic of the target message in a group chat, and as a plain reply in a direct one; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
+ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
+   const messageId = message.channel.address.messageId
+   if (!messageId) throw new Error('Missing Feishu reply target')
+   const text = checkedImText(message.text)
+-  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', message.id]
++  const reply = feishuReplyArgs(messageId, text, message.channel.address.direct === 'true', message.id)
+   try { await host.commands.lark(reply) }
+   catch (error) {
+     if (gone(error)) return 'gone'
+diff --git a/tests/registry.spec.ts b/tests/registry.spec.ts
+index 35045f0..223e4d5 100644
+--- a/tests/registry.spec.ts
++++ b/tests/registry.spec.ts
+@@ -9,6 +9,7 @@ import { Commands } from '../src/infra/commands.ts'
+ import { HealthBoard } from '../src/infra/health.ts'
+ import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
+ import { feishuChannel, feishuTrigger, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
++import { feishuReplyArgs } from '../src/sources/feishu-channel.ts'
+ import { testDeployment } from './fixtures/deployment.ts'
+ import { feishuKind } from '../src/sources/feishu.ts'
+ import { githubKind } from '../src/sources/github.ts'
+@@ -158,5 +159,16 @@ describe('Source registry', () => {
+     const reply: OutboundMessage = { id: 'reply-1', channel, text: 'Done', kind: 'reply' }
+     expect(await sources.send(reply, commands)).toBe('sent')
+     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['+messages-reply', '--message-id', 'om_dm']))
++    // A direct chat has no topic stream: Feishu answers reply_in_thread with 2200.
++    expect(run.mock.calls[0]![1]).not.toContain('--reply-in-thread')
++  })
++  it('replies in the topic for a group and keeps a leading mention out of the @file path', () => {
++    // Group chats get the topic stream.
++    expect(feishuReplyArgs('om_1', '收到', false, 'key')).toEqual(expect.arrayContaining(['--markdown', '收到', '--reply-in-thread']))
++    // lark-cli reads a flag value starting with @ as a file reference, so the text goes through --content instead.
++    const mention = feishuReplyArgs('om_1', '@bot 收到', true, 'key')
++    expect(mention).toEqual(expect.arrayContaining(['--content', JSON.stringify({ text: '@bot 收到' })]))
++    expect(mention).not.toContain('--markdown')
++    expect(mention).not.toContain('--reply-in-thread')
+   })
+ })
+diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
+index fd737f2..442e533 100644
+--- a/tests/runtime.spec.ts
++++ b/tests/runtime.spec.ts
+@@ -231,7 +231,8 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
+   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
+   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
+   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
+-  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
++  // A group chat keeps the topic stream; only a direct chat drops it (Feishu answers reply_in_thread there with 2200).
++  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。', '--reply-in-thread']))
+   // The first message holds the request itself: an explicit ticket has no assignment text beyond it, and nothing to read first.
+   const first = relays(sessionId)[0]!
+   expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER,
+-- 
+2.40.0.windows.1
+
