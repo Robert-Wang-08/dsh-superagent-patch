@@ -12,5 +12,8 @@
     "5f294cd7abaf0a0f959788761a6a721b5abe8536",
     "822e634873cfb12600632b325e7fbd01885ab172"
   ],
-  "patch_how": "git format-patch upstream/main..origin/main --no-merges"
+  "patch_how": "git format-patch upstream/main..origin/main --no-merges",
+  "local_overlays": [
+    "patches/overlay/0006-orchestrator-tools-existing-only.patch"
+  ]
 }

@@ -1,0 +1,13 @@
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index da1b8d0..430b077 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -263,7 +263,7 @@ export class Sessions {
+       // Keep only tools this host actually exposes: the preset disables tool-bash on Windows, and `tools.restrict()`
+       // refuses to name an unknown global tool, which would abort the whole plugin activation.
+       const masterTools = ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+-        .filter(name => name !== 'bash' || process.platform !== 'win32')
++        .filter(name => { try { return !!agent.ctx.tools.get(name, scopeParentOf(agent)) } catch { return false } })
+       binding.disposers.push(agent.ctx.tools.restrict({ allow: masterTools }),
+         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
+     } else {
