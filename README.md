@@ -18,7 +18,7 @@ dsh-superagent 的**适配补丁与上游同步脚本**辅助仓。不含上游�
 | 0004 | 5f294cd | fix(windows) PATHEXT 解析 PATH 命令 |
 | 0005 | 822e634 | fix(worker) worker preset 支持子模型选择 |
 
-> 父仓当前 gitlink 是 `aa575d5`，0001–0005 都已在这条历史上。fork 的 `origin/main` 是 `18822dd`，比 gitlink 更新；部署用的是父仓钉住的子模块，不是旁边另一份检出。
+> 父仓当前 gitlink 是 `aa575d5`，0001–0005 都已在这条历史上。fork 的 `origin/main` 是 `56bc97c`，比 gitlink 更新；部署用的是父仓钉住的子模块，不是旁边另一份检出。
 
 ## 本机覆盖（不改 fork）
 | 补丁 | 内容 |
