@@ -1,0 +1,17 @@
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index da1b8d0..f641823 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -205,7 +205,11 @@ export class Sessions {
+   /** Returns a tool registrar for `agent` that renders tool output as JSON text and attaches `output.image` as an image when present. */
+   private registerTool(agent: Agent, binding: SessionBinding): RegisterTool {
+     return (name, description, schema, execute) => {
+-      binding.disposers.push(agent.ctx.tools.register({ name, description, parameters: z.toJSONSchema(schema),
++      // Zod 4 keeps a non-enumerable `~standard` marker on toJSONSchema(). DSH
++      // rejects that during schema projection (`parameters must be lossless JSON`),
++      // which fails the turn before any tool runs. A JSON round trip drops the marker.
++      const parameters = JSON.parse(JSON.stringify(z.toJSONSchema(schema)))
++      binding.disposers.push(agent.ctx.tools.register({ name, description, parameters,
+         output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => {
+           const text = { type: 'text' as const, text: JSON.stringify(value) }
+           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined

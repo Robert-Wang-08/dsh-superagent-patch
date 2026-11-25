@@ -27,6 +27,7 @@ dsh-superagent 的**适配补丁与上游同步脚本**辅助仓。不含上游�
 | orchestrator-tools-existing-only | overlay/0006 | — | orchestrator 工具白名单只保留本机真实存在的工具。`tools.restrict()` 遇到不存在的 `bash` 会让整个插件激活失败。 |
 | progress-question | overlay/0007 | `23c8ef6` | 进度询问按工单进度答复。该提交已在固定版本历史上，打包时跳过。 |
 | model-selector-lists | overlay/0008 | — | Eval/Executor 的模型选择器改为列出 `GET models` 目录里的全部 provider、模型和推理强度；旧 datalist 按当前值过滤，只显示已选值。 |
+| tool-parameters-lossless-json | overlay/0009 | — | 注册工具前把 Zod 4 `toJSONSchema()` 转成纯 JSON，去掉不可枚举的 `~standard`。否则 DSH 投影参数时报 `parameters must be lossless JSON`，回合在 step 0 失败。 |
 
 fork 源码不提交这些改动。生成运行包：
 
@@ -57,6 +58,11 @@ fork 检出里出现过一处未提交的 `src/app/sessions.ts`：orchestrator �
 
 - 新增 `patches/overlay/0008-model-selector-lists.patch`（id `model-selector-lists`，基线 `56bc97c`）：Eval/Executor 的模型字段改为列出全部 provider / model / 推理强度。旧实现是自由文本 + datalist，datalist 按当前值过滤，已保存 `openai-codex` / `gpt-6.1-sol` 时看起来只有这两个选项。
 - 不改 fork，不改父仓子模块指针；生效走 `scripts/build-local.ps1` + 重启 3082。
+
+## 变更说明（2026-11-26）
+
+- 新增 `patches/overlay/0009-tool-parameters-lossless-json.patch`（id `tool-parameters-lossless-json`，基线 `56bc97c`）：工具注册使用的 `z.toJSONSchema()` 带有不可枚举的 `~standard`，DSH 投影时拒绝，主会话每个回合在 step 0 报 `orchestrator_read parameters must be lossless JSON`。打包前做一次 JSON 往返去掉该标记。
+- 这是固定检出源码与当前 DSH 宿主校验的冲突，不是 0006/0008 引入的。不改 fork。
 
 ## 相关运营脚本（仍在父仓根目录，勿移动）
 `dsh-superagent-service.ps1` / `dsh-superagent-profile-sync.ps1` / `dsh-superagent-lark-bot.ps1` /
