@@ -1,0 +1,185 @@
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index 2c202fc..b1f9a28 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -403,7 +403,9 @@ const TEXT = {
+   modelEffort: ['推理强度（可选）', 'Reasoning effort (optional)'],
+   modelInherit: ['继承 DSH 默认值', 'Inherit the DSH default'],
+   modelEffortDefault: ['模型默认', 'Model default'],
+-  modelCatalogError: ['无法加载模型建议，仍可填写已知的服务商和模型：{error}', 'Model suggestions are unavailable; known Provider and Model names still work: {error}'],
++  modelTyped: ['手动填写服务商与模型', 'Enter the Provider and Model by hand'],
++  modelList: ['从列表选择服务商与模型', 'Choose the Provider and Model from the list'],
++  modelCatalogError: ['无法加载模型列表，已改为手动填写服务商和模型：{error}', 'The model list is unavailable; enter the Provider and Model by hand: {error}'],
+   historyIntro: ['每次保存记一条；改变策略版本的保存（接单规则、各来源上的策略、接单模式）通知进行中的工单。', 'Each save is one entry; saves that change the Policy version (rules, the Policy on each Source, accept mode) notify open Tickets.'],
+   historyItem: ['第 {revision} 次保存 · {source}', 'Save {revision} · {source}'],
+   historyPolicyChanged: ['生成策略版本 {version}', 'New Policy version {version}'],
+diff --git a/src/client/settings-kit.tsx b/src/client/settings-kit.tsx
+index d4ec804..9c11a28 100644
+--- a/src/client/settings-kit.tsx
++++ b/src/client/settings-kit.tsx
+@@ -70,37 +70,83 @@ export function SwitchRow({ label, hint, checked,
+   </div>
+ }
+ type RoleModel = Settings['eval']['model']
++/**
++ * The model a role uses: every provider the Host catalogs, every model of the chosen provider, and its reasoning efforts.
++ * A saved route the catalog does not list stays visible, and a failed or partial catalog still allows typed names.
++ */
+ export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
+   const { t, call } = usePanel()
+   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
+   const [error, setError] = useState<string>()
++  const [typed, setTyped] = useState(false)
+   useEffect(() => { call('GET models').then(setCatalog, failure => setError(errorText(failure))) }, [call])
+   const current = { provider: value?.provider ?? '', model: value?.model ?? '', effort: value?.reasoningEffort ?? '' }
+   const set = (next: Partial<typeof current>) => {
+     const { provider, model, effort } = { ...current, ...next }
+     onChange(provider.trim() || model.trim() || effort.trim() ? { provider, model, ...effort ? { reasoningEffort: effort } : {} } : null)
+   }
+-  const models = catalog?.groups.find(group => group.id === current.provider.trim())?.models ?? []
++  const groups = catalog?.groups ?? []
++  const models = groups.find(group => group.id === current.provider.trim())?.models ?? []
++  const efforts = models.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []
+   const fallback = catalog?.default
++  const providerKnown = groups.some(group => group.id === current.provider.trim())
++  const modelKnown = models.some(model => model.id === current.model.trim())
++  const effortKnown = efforts.some(effort => effort.id === current.effort)
+   const input = (name: keyof typeof current, label: string, placeholder: string) => <Field label={label}>
+     <Input list={`${id}-${name}s`} spellCheck={false} placeholder={placeholder} value={current[name]}
+       onChange={event => set({ [name]: event.target.value })} />
+   </Field>
++  // Choosing a provider drops a model it does not offer, and a model drops an effort it does not support.
++  const chooseProvider = (provider: string) => {
++    const offered = groups.find(group => group.id === provider)?.models ?? []
++    const model = offered.some(item => item.id === current.model.trim()) ? current.model.trim() : ''
++    const effort = offered.find(item => item.id === model)?.reasoning?.efforts.some(item => item.id === current.effort) ? current.effort : ''
++    set({ provider, model, effort })
++  }
++  const chooseModel = (model: string) => {
++    const supported = models.find(item => item.id === model)?.reasoning?.efforts.some(item => item.id === current.effort)
++    set({ model, effort: supported ? current.effort : '' })
++  }
++  // Typed names are the fallback when the catalog cannot be read in full; otherwise the lists are the way to choose.
++  const typedMode = typed || error !== undefined
+   return <div className="dt-model">
+     <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
+       ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
+     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
+-    <div className="dt-grid3">
++    {typedMode ? <div className="dt-grid3">
+       {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
+         t('modelEffort'), t('modelEffortDefault'))}
+-    </div>
+-    <datalist id={`${id}-providers`}>{catalog?.groups.map(group => <option key={group.id}
++    </div> : <div className="dt-grid3">
++      <Field label={t('modelProvider')}>
++        <select className="dt-select" value={current.provider.trim()} onChange={event => chooseProvider(event.target.value)}>
++          <option value="">{t('modelInherit')}</option>
++          {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
++          {current.provider.trim() && !providerKnown && <option value={current.provider.trim()}>{current.provider.trim()}</option>}
++        </select>
++      </Field>
++      <Field label={t('modelName')}>
++        <select className="dt-select" required={!!current.provider.trim()} value={current.model.trim()}
++          onChange={event => chooseModel(event.target.value)}>
++          <option value="">{t('modelInherit')}</option>
++          {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
++          {current.model.trim() && !modelKnown && <option value={current.model.trim()}>{current.model.trim()}</option>}
++        </select>
++      </Field>
++      <Field label={t('modelEffort')}>
++        <select className="dt-select" value={current.effort} onChange={event => set({ effort: event.target.value })}>
++          <option value="">{t('modelEffortDefault')}</option>
++          {efforts.map(effort => <option key={effort.id} value={effort.id}>{effort.name}</option>)}
++          {current.effort && !effortKnown && <option value={current.effort}>{current.effort}</option>}
++        </select>
++      </Field>
++    </div>}
++    <datalist id={`${id}-providers`}>{groups.map(group => <option key={group.id}
+       value={group.id}>{group.name}</option>)}</datalist>
+     <datalist id={`${id}-models`}>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</datalist>
+     <datalist id={`${id}-efforts`}>
+-      {(models.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []).map(effort => <option key={effort.id}
+-        value={effort.id}>{effort.name}</option>)}
++      {efforts.map(effort => <option key={effort.id} value={effort.id}>{effort.name}</option>)}
+     </datalist>
++    {!error && <button type="button" className="dt-textlink" onClick={() => setTyped(!typed)}>{t(typed ? 'modelList' : 'modelTyped')}</button>}
+   </div>
+ }
+ 
+diff --git a/tests/fixtures/panel-server.ts b/tests/fixtures/panel-server.ts
+index 0c8f668..3dd9314 100644
+--- a/tests/fixtures/panel-server.ts
++++ b/tests/fixtures/panel-server.ts
+@@ -376,7 +376,9 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
+   'POST setup/check': { answer: () => ({ restarting: true }) },
+   'GET models': { answer: () => ({ default: { provider: 'host', model: 'default' }, routableProviders: [], failures: [],
+     groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
+-      reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
++      reasoning: { efforts: [{ id: 'high', name: 'High' }] } }, { id: 'worker-model-2', name: 'Worker model 2' }] },
++    { id: 'other-provider', name: 'Other provider', models: [{ id: 'other-model', name: 'Other model',
++      reasoning: { efforts: [{ id: 'low', name: 'Low' }] } }] }] }) },
+   'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
+   'PUT prompts': { body: true, answer: ({ body }) => {
+     const { revision } = server.prompts
+diff --git a/tests/panel-settings.spec.tsx b/tests/panel-settings.spec.tsx
+index 543b86b..5ff63e2 100644
+--- a/tests/panel-settings.spec.tsx
++++ b/tests/panel-settings.spec.tsx
+@@ -29,8 +29,8 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+   await click(find(zh['tab.settings'], '.dt-status-head button'))
+   await click(zh['mode.auto'])
+   await type(field<HTMLInputElement>(zh.evalTimeout), '180')
+-  const [provider, model] = all('.dt-model input')
+-  await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
++  const [provider, model] = [field<HTMLSelectElement>(zh.modelProvider), field<HTMLSelectElement>(zh.modelName)]
++  await type(provider, 'worker-provider'); await type(model, 'worker-model')
+   await click(zh.save)
+   expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
+   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
+@@ -48,10 +48,10 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+   await click('DSH_SUPERAGENT_DIR')
+   expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
+   await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
+-  const [workerProvider, workerModel, effort] = all('.dt-model input')
+-  await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
+-    'worker-model'); await type(effort as HTMLInputElement, 'high')
+-  expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
++  const [workerProvider, workerModel, effort] = [field<HTMLSelectElement>(zh.modelProvider),
++    field<HTMLSelectElement>(zh.modelName), field<HTMLSelectElement>(zh.modelEffort)]
++  await type(workerProvider, 'worker-provider'); await type(workerModel, 'worker-model'); await type(effort, 'high')
++  expect([...effort.options].map(option => option.getAttribute('value'))).toEqual(['', 'high'])
+   await click(zh.save)
+   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
+@@ -60,6 +60,30 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+     'settings/executor'])
+ })
+ 
++it('lists every catalog Provider and its Models in the Eval model selector, and keeps a typed route available', async () => {
++  await mount()
++  await click(zh['tab.eval'])
++  await click(find(zh['tab.settings'], '.dt-status-head button'))
++  const provider = field<HTMLSelectElement>(zh.modelProvider)
++  expect([...provider.options].map(option => [option.value, option.textContent])).toEqual([
++    ['', zh.modelInherit], ['worker-provider', 'Worker provider'], ['other-provider', 'Other provider']])
++  await type(provider, 'other-provider')
++  const model = field<HTMLSelectElement>(zh.modelName)
++  expect([...model.options].map(option => [option.value, option.textContent])).toEqual([
++    ['', zh.modelInherit], ['other-model', 'Other model']])
++  await type(model, 'other-model')
++  await type(field<HTMLSelectElement>(zh.modelEffort), 'low')
++  await click(zh.save)
++  expect(server.settings.eval.model).toEqual({ provider: 'other-provider', model: 'other-model', reasoningEffort: 'low' })
++  // A name the catalog does not list can still be typed, for a provider whose catalog could not be read.
++  await click(zh.modelTyped)
++  const [typedProvider, typedModel, typedEffort] = all('.dt-model input')
++  await type(typedProvider as HTMLInputElement, 'worker-provider'); await type(typedModel as HTMLInputElement, 'worker-model')
++  await type(typedEffort as HTMLInputElement, '')
++  await click(zh.save)
++  expect(server.settings.eval.model).toEqual({ provider: 'worker-provider', model: 'worker-model' })
++})
++
+ it('loads configuration history on demand with localized changes, Source field labels and notified Tickets', async () => {
+   server.history = { current: 3, policyVersion: 'abcdef1234567890', items: [{ revision: 3, savedAt: '2026-09-22T00:00:00Z',
+     source: 'sync', policyVersion: 'abcdef1234567890', policyChanged: true, notified: [{ id: 't1', title: '修复回归' }], block: 'policy',
