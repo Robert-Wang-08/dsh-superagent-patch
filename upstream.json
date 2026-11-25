@@ -5,6 +5,11 @@
   "upstream_pinned": "8c32a9dc5d72c033816c6a8110b37f40cf94fba4",
   "fork_pinned": "5f294cd7abaf0a0f959788761a6a721b5abe8536",
   "fork_origin_main": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+  "snapshot": {
+    "commit": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+    "path_hint": "../dsh-superagent",
+    "clone_url": "https://github.com/Robert-Wang-08/dsh-superagent-prototype.git"
+  },
   "adaptation_commits": [
     "c0b7df4261b289e9c9e1192fa1d307fd5a35906e",
     "c10753c8f33dcd8a7bd2c3d7bde42a7bff42c3cb",
@@ -13,8 +18,18 @@
     "822e634873cfb12600632b325e7fbd01885ab172"
   ],
   "patch_how": "git format-patch upstream/main..origin/main --no-merges",
-  "local_overlays": [
-    "patches/overlay/0006-orchestrator-tools-existing-only.patch",
-    "patches/overlay/0007-answer-progress-questions-as-tracking.patch"
+  "overlays": [
+    {
+      "id": "orchestrator-tools-existing-only",
+      "path": "patches/overlay/0006-orchestrator-tools-existing-only.patch",
+      "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+      "absorbed_by": null
+    },
+    {
+      "id": "progress-question",
+      "path": "patches/overlay/0007-answer-progress-questions-as-tracking.patch",
+      "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+      "absorbed_by": "23c8ef6"
+    }
   ]
 }
