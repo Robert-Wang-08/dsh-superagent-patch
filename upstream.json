@@ -30,6 +30,12 @@
       "path": "patches/overlay/0007-answer-progress-questions-as-tracking.patch",
       "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
       "absorbed_by": "23c8ef6"
+    },
+    {
+      "id": "eval-model-picker-all-provider-models",
+      "path": "patches/overlay/0008-eval-model-picker-all-provider-models.patch",
+      "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+      "absorbed_by": null
     }
   ]
 }

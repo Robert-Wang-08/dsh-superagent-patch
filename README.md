@@ -26,6 +26,7 @@ dsh-superagent 的**适配补丁与上游同步脚本**辅助仓。不含上游�
 | --- | --- | --- | --- |
 | orchestrator-tools-existing-only | overlay/0006 | — | orchestrator 工具白名单只保留本机真实存在的工具。`tools.restrict()` 遇到不存在的 `bash` 会让整个插件激活失败。 |
 | progress-question | overlay/0007 | `23c8ef6` | 进度询问按工单进度答复。该提交已在固定版本历史上，打包时跳过。 |
+| eval-model-picker-all-provider-models | overlay/0008 | — | 研判/执行器模型选择从文本建议改为按 DSH Provider 目录列出全部模型；选中即回填服务商、模型和推理强度。 |
 
 fork 源码不提交这些改动。生成运行包：
 
@@ -51,6 +52,15 @@ fork 检出里出现过一处未提交的 `src/app/sessions.ts`：orchestrator �
 - 新增 `scripts/build-local.ps1`：临时套上 overlay，`pnpm build`，再还原 fork 跟踪文件。
 - `upstream.json` 用 overlays 清单登记覆盖，和已经在 fork 历史里的 0001–0005 分开。
 - 本机已用该脚本重新生成 `lib/`，并重启 3082。fork 源码没有为此新增提交。
+
+## 变更说明（2026-11-25）
+
+面板「评估 → 研判模型」原先只有服务商/模型/推理强度三个文本框，建议列表由浏览器按当前值过滤；打开时通常只看到当前路由（`gpt（official）` 与 `gpt-6.1-sol`），看起来像只能选这两项。新增 `patches/overlay/0008-eval-model-picker-all-provider-models.patch`：
+
+- 三个输入之上增加「从 Provider 列表选择」下拉：按 DSH 模型目录列出全部 provider/model，选中后回填服务商、模型和推理强度；三项仍可手动填写目录里没有的路由。
+- 切换模型时，若新模型未声明原推理强度，则回退为模型默认值，避免保存不支持的值。
+- 同步更新中英文案、`docs/005-panel.md` 与 `tests/panel-settings.spec.tsx`。
+- 本机已用 `scripts/build-local.ps1` 重新生成 `lib/`；fork 源码保持无变更。
 
 ## 相关运营脚本（仍在父仓根目录，勿移动）
 `dsh-superagent-service.ps1` / `dsh-superagent-profile-sync.ps1` / `dsh-superagent-lark-bot.ps1` /
