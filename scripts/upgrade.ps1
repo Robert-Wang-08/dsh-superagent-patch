@@ -3,18 +3,18 @@
 .SYNOPSIS
   dsh-superagent 上游/补丁更新后的本地同步脚本。
 .DESCRIPTION
-  将 deepseek-ai/dsh-superagent-prototype（upstream）的新提交，以「候选分支」方式合入
-  自己的 fork（Robert-Wang-08/dsh-superagent-prototype），通过 clean-build + 测试闸门后
-  才快进 main。不 force-push、不重写历史、不丢 fork 已发布提交（822e634 等）。
-  默认（不带 -Apply）只 fetch 并报告上游是否领先，等价 DryRun。
+  只读查看上游是否领先固定 fork。fork 已冻结：-Apply 与 -BumpParent 直接拒绝，
+  不再合入上游、不再 push、不再回写父仓 gitlink。
+  对 DSH Super Agent 的变更写到本仓补丁，用 build-local.ps1 在打包时生效。
+  默认（不带 -Apply）只 fetch 并报告上游是否领先。
 .PARAMETER Apply
-  实际执行升级。缺省为只读报告。
+  已停用。fork 已固定，传入此开关会直接拒绝。
 .PARAMETER SkipPush
   只做本地升级与测试，不 push origin。
 .PARAMETER BumpParent
-  升级成功后，在父仓提交新的 dsh-superagent gitlink 并推送。
+  已停用。dsh-superagent 不再是父仓子模块，不能回写 gitlink。
 .PARAMETER ForkPath
-  fork 检出目录，默认 ../dsh-superagent。
+  fork 检出目录。默认是仓库根的兄弟目录 dsh-superagent。
 .PARAMETER UpstreamRef
   要合入的上游引用，默认 upstream/main。
 #>
@@ -32,7 +32,11 @@ $env:GIT_TERMINAL_PROMPT = '0'
 
 $patchRoot = Split-Path -Parent $PSScriptRoot          # .../dsh-superagent-patch
 $parent    = Split-Path -Parent $patchRoot             # .../dsh（父仓根）
-$fork      = if ($ForkPath) { (Resolve-Path $ForkPath).Path } else { Join-Path $parent 'dsh-superagent' }
+$fork      = if ($ForkPath) { (Resolve-Path $ForkPath).Path } else { Join-Path (Split-Path -Parent $parent) 'dsh-superagent' }
+
+if ($Apply -or $BumpParent) {
+  throw "fork 已固定，不再合入上游、不再 push、不再回写父仓 gitlink。变更写到 dsh-superagent-patch，用 scripts/build-local.ps1 打包时生效。见 变更约定.md。"
+}
 
 function Invoke-Git([string]$repo, [string[]]$a) {
   $out  = & git --no-optional-locks -C $repo @a 2>&1

@@ -4,11 +4,12 @@
   用 patch 仓的本地覆盖补丁生成 dsh-superagent 的 lib，并保持 fork 源码干净。
 .DESCRIPTION
   patches/*.patch 是已经在 fork 历史里的存档，这里不重复套用。
-  patches/overlay/*.patch 是尚未进入 fork 的本机覆盖。脚本先要求 fork 工作区干净，
-  再临时套上 overlay、执行 pnpm build，最后把跟踪文件还原。lib/ 与 node_modules/ 被
-  .gitignore 忽略，所以生成的包留在检出目录里，git status 仍然干净。
+  patches/overlay/*.patch 是对固定 fork 的本机覆盖。脚本先要求 fork 工作区干净，
+  再临时套上尚未包含的 overlay、执行 pnpm build，最后把跟踪文件还原。
+  固定版本里已经有的补丁会跳过。lib/ 与 node_modules/ 被 .gitignore 忽略，
+  所以生成的包留在检出目录里，已跟踪源码保持无变更。
 .PARAMETER ForkPath
-  fork 检出目录。默认是本仓上一级的 dsh-superagent（父仓子模块）。
+  fork 检出目录。默认是仓库根的兄弟目录 dsh-superagent（固定版本，不是父仓子模块）。
 #>
 [CmdletBinding()]
 param(
@@ -18,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 
 $patchRoot = Split-Path -Parent $PSScriptRoot
 $parent = Split-Path -Parent $patchRoot
-$fork = if ($ForkPath) { (Resolve-Path $ForkPath).Path } else { Join-Path $parent 'dsh-superagent' }
+$fork = if ($ForkPath) { (Resolve-Path $ForkPath).Path } else { Join-Path (Split-Path -Parent $parent) 'dsh-superagent' }
 $overlayDir = Join-Path $patchRoot 'patches\overlay'
 
 if (-not (Test-Path (Join-Path $fork '.git'))) { throw "fork 检出不存在：$fork" }
@@ -43,10 +44,18 @@ function Restore-Fork {
 try {
   foreach ($patch in $patches) {
     git -C $fork apply --check -- $patch.FullName
-    if ($LASTEXITCODE -ne 0) { throw ("补丁套不上当前 fork：$($patch.Name)") }
-    git -C $fork apply -- $patch.FullName
-    if ($LASTEXITCODE -ne 0) { throw ("打补丁失败：$($patch.Name)") }
-    Write-Host ("applied " + $patch.Name)
+    if ($LASTEXITCODE -eq 0) {
+      git -C $fork apply -- $patch.FullName
+      if ($LASTEXITCODE -ne 0) { throw ("打补丁失败：$($patch.Name)") }
+      Write-Host ("applied " + $patch.Name)
+      continue
+    }
+    git -C $fork apply --reverse --check -- $patch.FullName
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host ("already in fixed fork, skip " + $patch.Name)
+      continue
+    }
+    throw ("补丁套不上当前 fork：$($patch.Name)")
   }
   Push-Location $fork
   try {

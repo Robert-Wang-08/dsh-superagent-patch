@@ -14,6 +14,7 @@
   ],
   "patch_how": "git format-patch upstream/main..origin/main --no-merges",
   "local_overlays": [
-    "patches/overlay/0006-orchestrator-tools-existing-only.patch"
+    "patches/overlay/0006-orchestrator-tools-existing-only.patch",
+    "patches/overlay/0007-answer-progress-questions-as-tracking.patch"
   ]
 }

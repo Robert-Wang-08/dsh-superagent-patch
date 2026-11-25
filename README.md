@@ -4,7 +4,7 @@ dsh-superagent 的**适配补丁与上游同步脚本**辅助仓。不含上游�
 
 ## 内容
 - `patches/*.patch` — fork 相对上游的 5 个适配提交（format-patch 产物），用于存档与发 PR 回上游。这些提交已经在 fork 历史里，本地打包不再重复套用。
-- `patches/overlay/*.patch` — 尚未进入 fork 的本机覆盖。fork 检出保持干净，只在生成 `lib/` 时临时套上。
+- `patches/overlay/*.patch` — 对固定 fork 的本机覆盖。打包时临时套上，构建后还原已跟踪文件。约定见 [变更约定.md](变更约定.md)。
 - `scripts/upgrade.ps1` — 上游升级后的本地同步脚本（候选分支 + clean-build + 测试闸门）。
 - `scripts/build-local.ps1` — 套上 overlay、执行 `pnpm build`、再还原 fork 跟踪文件。
 - `upstream.json` — 上游/fork 指针与适配提交清单。
@@ -18,20 +18,21 @@ dsh-superagent 的**适配补丁与上游同步脚本**辅助仓。不含上游�
 | 0004 | 5f294cd | fix(windows) PATHEXT 解析 PATH 命令 |
 | 0005 | 822e634 | fix(worker) worker preset 支持子模型选择 |
 
-> 父仓当前 gitlink 是 `aa575d5`，0001–0005 都已在这条历史上。fork 的 `origin/main` 是 `56bc97c`，比 gitlink 更新；部署用的是父仓钉住的子模块，不是旁边另一份检出。
+> fork 是固定版本，不再是 `dsh-ynm3000` 的子模块。本机检出是 `D:\src\dsh-superagent`（`56bc97c`）。0001–0005 已在这条历史上。之后的行为变更写进本仓，不改 fork。
 
 ## 本机覆盖（不改 fork）
 | 补丁 | 内容 |
 | --- | --- |
 | overlay/0006 | orchestrator 工具白名单只保留本机真实存在的工具。`tools.restrict()` 遇到不存在的 `bash` 会让整个插件激活失败。 |
+| overlay/0007 | 进度询问按工单进度答复（`23c8ef6`）。该提交已在固定版本历史上，打包时若已包含则跳过。 |
 
-fork 源码不提交这处改动。生成运行包：
+fork 源码不提交这些改动。生成运行包：
 
 ```
 pwsh -File scripts/build-local.ps1
 ```
 
-脚本要求子模块工作区没有未提交的跟踪改动。它临时改 `src/`，构建完成后还原。`lib/` 在 `.gitignore` 里，profile 的 `link:` 直接用这份 `lib/`。重新 `pnpm build` 而不走这个脚本，会把 0006 从包里盖掉。
+脚本要求固定检出没有未提交的跟踪改动。它临时改 `src/`，构建完成后还原。`lib/` 在 `.gitignore` 里，profile 的 `link:` 直接用这份 `lib/`。重新 `pnpm build` 而不走这个脚本，会把尚未进入固定版本的 overlay 从包里盖掉。
 
 ## 变更说明（2026-11-23）
 
@@ -40,7 +41,7 @@ fork 检出里出现过一处未提交的 `src/app/sessions.ts`：orchestrator �
 - 新增 `patches/overlay/0006-orchestrator-tools-existing-only.patch` 保存该差异。
 - 新增 `scripts/build-local.ps1`：临时套上 overlay，`pnpm build`，再还原 fork 跟踪文件。
 - `upstream.json` 用 `local_overlays` 登记这条覆盖，和已经在 fork 历史里的 0001–0005 分开。
-- 本机已用该脚本重新生成 `lib/`，并重启 3082。fork 子模块仍停在父仓钉住的 `aa575d5`，没有新的源码提交。
+- 本机已用该脚本重新生成 `lib/`，并重启 3082。fork 源码没有为此新增提交。
 
 ## 用法
 ```
