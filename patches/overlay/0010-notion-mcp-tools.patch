@@ -1,0 +1,51 @@
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index f2a699e..e09c654 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -58,6 +58,37 @@ declare module '@deepseek-ai/cordis' {
+  * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
+  * messages other Sessions, or edits documents.
+  */
++/**
++ * The Notion MCP tools added to the main and worker allowlists: the deployment's capability to write generated content
++ * to Notion. A name is kept only when the MCP client registered it, like every name in `masterTools` and `WORK_TOOLS`,
++ * so a host without the `mcp-notion` profile row is unaffected.
++ */
++const NOTION_MCP_TOOLS = [
++  'mcp__notion__API-get-user',
++  'mcp__notion__API-get-users',
++  'mcp__notion__API-get-self',
++  'mcp__notion__API-post-search',
++  'mcp__notion__API-get-block-children',
++  'mcp__notion__API-patch-block-children',
++  'mcp__notion__API-retrieve-a-block',
++  'mcp__notion__API-update-a-block',
++  'mcp__notion__API-delete-a-block',
++  'mcp__notion__API-retrieve-a-page',
++  'mcp__notion__API-patch-page',
++  'mcp__notion__API-post-page',
++  'mcp__notion__API-retrieve-a-page-property',
++  'mcp__notion__API-retrieve-a-comment',
++  'mcp__notion__API-create-a-comment',
++  'mcp__notion__API-query-data-source',
++  'mcp__notion__API-retrieve-a-data-source',
++  'mcp__notion__API-update-a-data-source',
++  'mcp__notion__API-create-a-data-source',
++  'mcp__notion__API-list-data-source-templates',
++  'mcp__notion__API-retrieve-a-database',
++  'mcp__notion__API-move-page',
++  'mcp__notion__API-retrieve-page-markdown',
++  'mcp__notion__API-update-page-markdown',
++]
+ const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
+   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+ /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
+@@ -293,7 +324,7 @@ export class Sessions {
+   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
+     const store = this.host.store
+     const parent = scopeParentOf(agent)
+-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
++    const allow = [...WORK_TOOLS, ...NOTION_MCP_TOOLS].filter(name => agent.ctx.tools.get(name, parent))
+     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+       const current = store.tickets.get(ticketId)
+       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined

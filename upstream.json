@@ -42,6 +42,12 @@
       "path": "patches/overlay/0009-tool-parameters-lossless-json.patch",
       "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
       "absorbed_by": null
+    },
+    {
+      "id": "notion-mcp-tools",
+      "path": "patches/overlay/0010-notion-mcp-tools.patch",
+      "base": "56bc97c0141bfa6143022e4c18517736e1c0e7b8",
+      "absorbed_by": null
     }
   ]
 }
